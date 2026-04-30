@@ -26,6 +26,27 @@ def _percentile(sorted_vals: list[int], q: float) -> float:
     return float(sorted_vals[lo] + (k - lo) * (sorted_vals[hi] - sorted_vals[lo]))
 
 
+def _percentile_index(n: int, q: float) -> int:
+    """q ∈ [0,100]，返回最接近该分位位置的样本下标（0-based）。"""
+    if n <= 1:
+        return 0
+    k = (n - 1) * (q / 100.0)
+    idx = int(round(k))
+    if idx < 0:
+        return 0
+    if idx >= n:
+        return n - 1
+    return idx
+
+
+def _preview_text(text: str, limit: int = 80) -> str:
+    """单行预览：换行压成空格，过长则截断。"""
+    one_line = " ".join(text.splitlines()).strip()
+    if len(one_line) <= limit:
+        return one_line
+    return one_line[:limit] + "..."
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="统计 JSONL 各 chunk_text 的长度")
     ap.add_argument(
@@ -48,7 +69,7 @@ def main() -> None:
         print(f"文件不存在: {path}", file=sys.stderr)
         sys.exit(2)
 
-    lengths: list[int] = []
+    rows: list[tuple[int, str]] = []
     n_bad = 0
     with path.open(encoding="utf-8") as f:
         for line_no, line in enumerate(f, start=1):
@@ -64,14 +85,16 @@ def main() -> None:
             if text is None:
                 n_bad += 1
                 continue
-            lengths.append(len(text))
+            rows.append((len(text), str(text)))
 
-    n = len(lengths)
+    n = len(rows)
     if n == 0:
         print(f"无可统计行（坏行或未含 chunk_text: {n_bad}）路径={path}")
         sys.exit(1)
 
+    lengths = [x[0] for x in rows]
     s = sorted(lengths)
+    rows_sorted = sorted(rows, key=lambda x: x[0])
     mean_v = statistics.mean(lengths)
     median_v = statistics.median(lengths)
 
@@ -89,6 +112,9 @@ def main() -> None:
         lines_out.append(f"标准差: {statistics.stdev(lengths):.2f}")
     for p in (1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99):
         lines_out.append(f"P{p}: {_percentile(s, float(p)):.0f}")
+        ex_idx = _percentile_index(len(rows_sorted), float(p))
+        ex_len, ex_text = rows_sorted[ex_idx]
+        lines_out.append(f"  例子(len={ex_len}): {_preview_text(ex_text)}")
 
     print("\n".join(lines_out))
 
