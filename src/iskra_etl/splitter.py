@@ -1,8 +1,15 @@
-"""Splitter：LlamaIndex 读 Markdown → ``MarkdownNodeParser`` 按标题切段。不接 Embedding / VectorStore。
+"""Splitter：LlamaIndex 读 Markdown
+→ ``MarkdownNodeParser``（标题骨骼）
+→ ``SentenceSplitter``（长段细切）
+→ **碎片缝合**（过短块和下一块合并、末尾并回上一块）。
+不接 Embedding / VectorStore。
 
 术语：「语料根」corpus_root 是磁盘上的目录；其下每个匹配的 ``**/index.md`` 是一「篇」文档
 （LlamaIndex 的一个 ``Document``），切段后得到多条块与各篇内的 ``chunk_index``。
-块边界由 Markdown 标题层级决定。正文若含 YAML frontmatter（``---``），切段前会先去除。
+正文若含 YAML frontmatter（``---``），切段前会先去除。
+
+缝合阈值按 **Unicode 字符数** ``len()``，与 ``stats_chunk_lengths.py`` 口径一致；
+``SentenceSplitter`` 的 ``chunk_size`` / ``chunk_overlap`` 为 **token** 口径（LlamaIndex 默认）。
 """
 from __future__ import annotations
 
@@ -15,7 +22,7 @@ from typing import Callable
 from llama_index.core import Document, SimpleDirectoryReader
 
 # include_prev_next_rel=False：不挂 prev/next 链；计划仅要线性 chunk_index。
-from llama_index.core.node_parser import MarkdownNodeParser
+from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
 
 
 @dataclass(frozen=True)
@@ -40,6 +47,17 @@ def _rel_path_for_document(doc_file_path: str, corpus_root: Path) -> str:
         msg = f"文档路径不在语料根下：file_path={doc_file_path!s}, corpus_root={corpus_root!s}"
         raise ValueError(msg) from exc
     return rel.as_posix()
+
+
+def normalize_newlines(text: str) -> str:
+    """将 ``\\r\\n``、孤立 ``\\r`` 规范为 ``\\n``，便于按 ``\\n\\n`` 识别段落。
+
+    Windows 语料里常见 ``\\r\\n\\r\\n``；若不转换，与 ``SentenceSplitter`` 的段落分隔符
+    （默认我们想用 ``\\n\\n``）字符串比对会失败，段落优先切分形同失效。
+    """
+    if not text:
+        return text
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _strip_md_yaml_frontmatter(text: str) -> str:
@@ -69,19 +87,54 @@ def _strip_md_yaml_frontmatter(text: str) -> str:
     return text
 
 
+def consolidate_small_fragments(
+    pieces: Sequence[str],
+    *,
+    min_chars: int = 512,
+    joiner: str = "\n\n",
+) -> list[str]:
+    """碎片缝合：单段 ``len(text) <= min_chars`` 时继续拼下一段，直到 ``len > min_chars``。
+
+    若已无任何后续段仍不足 ``min_chars``：并入 **已输出的最后一块**；若尚无任何输出块则单独保留
+    （整篇极短时的唯一块）。
+    """
+    if not pieces:
+        return []
+    out: list[str] = []
+    i = 0
+    n = len(pieces)
+    while i < n:
+        acc = str(pieces[i])
+        i += 1
+        while len(acc) <= min_chars and i < n:
+            acc = acc + joiner + str(pieces[i])
+            i += 1
+        if len(acc) <= min_chars and out:
+            out[-1] = out[-1] + joiner + acc
+        else:
+            out.append(acc)
+    return out
+
+
 def split_corpus_to_chunks(
     corpus_root: Path,
     *,
     glob_pattern: str = "**/index.md",
     paths: Sequence[Path] | None = None,
     header_path_separator: str = "/",
+    sentence_chunk_size: int = 1024,
+    sentence_chunk_overlap: int = 128,
+    paragraph_separator: str = "\n\n",
+    consolidate_min_chars: int = 512,
     on_start: Callable[[int], None] | None = None,
     on_document_start: Callable[[int, int, str], None] | None = None,
     on_document_done: Callable[[int, int, str, int], None] | None = None,
 ) -> Iterator[ChunkRecord]:
     """遍历语料根下匹配的 Markdown，逐篇切段；每篇 chunk_index 从 0 递增。
 
-    按 ``MarkdownNodeParser``：在标题边界切分；元数据里可带标题路径（由 ``header_path_separator`` 连接）。
+    流程：去 frontmatter → **normalize_newlines**（``\\r\\n``→``\\n``）→ **MarkdownNodeParser**
+    → 对每个标题块 **SentenceSplitter**（这里换行为 ``\\n\\n``，而非 LlamaIndex 默认的``\\n\\n\\n`` ，更贴近常见 Markdown 段间空行）
+    → **consolidate_small_fragments**。
 
     「语料」侧常见 ``index.md`` 会带 YAML frontmatter（首尾 ``---``）；切段前先 **去掉**，不产出纯元数据块。
 
@@ -108,6 +161,13 @@ def split_corpus_to_chunks(
         include_prev_next_rel=False,
         header_path_separator=header_path_separator,
     )
+    sentence_splitter = SentenceSplitter(
+        chunk_size=max(sentence_chunk_size, 128),
+        chunk_overlap=min(sentence_chunk_overlap, max(sentence_chunk_size // 2, 0)),
+        paragraph_separator=paragraph_separator,
+        include_metadata=True,
+        include_prev_next_rel=False,
+    )
     total_docs = len(docs)
 
     def _gen() -> Iterator[ChunkRecord]:
@@ -119,17 +179,25 @@ def split_corpus_to_chunks(
             if on_document_start is not None:
                 on_document_start(total_docs, doc_index_1, rel)
             raw_text = doc.text or ""
-            cleaned = _strip_md_yaml_frontmatter(raw_text)
-            doc_to_parse = doc if cleaned == raw_text else Document(text=cleaned, metadata=dict(doc.metadata))
+            body = normalize_newlines(_strip_md_yaml_frontmatter(raw_text))
+            doc_to_parse = Document(text=body, metadata=dict(doc.metadata))
             nodes = md_parser.get_nodes_from_documents([doc_to_parse])
-            for i, node in enumerate(nodes):
+            fragments: list[str] = []
+            for node in nodes:
+                piece = node.get_content()
+                if not piece:
+                    continue
+                sub_nodes = sentence_splitter.get_nodes_from_documents([Document(text=piece)])
+                fragments.extend(sn.get_content() for sn in sub_nodes if sn.get_content())
+            merged = consolidate_small_fragments(fragments, min_chars=consolidate_min_chars)
+            for i, chunk_text in enumerate(merged):
                 yield ChunkRecord(
                     rel_path=rel,
                     chunk_index=i,
-                    chunk_text=node.get_content(),
+                    chunk_text=chunk_text,
                 )
             if on_document_done is not None:
-                on_document_done(total_docs, doc_index_1, rel, len(nodes))
+                on_document_done(total_docs, doc_index_1, rel, len(merged))
 
     return _gen()
 

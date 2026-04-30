@@ -80,6 +80,10 @@ def main() -> None:
         else os.environ.get("ISKRA_HEADER_PATH_SEP", "/")
     )
 
+    sentence_chunk_size = int(os.environ.get("ISKRA_SENTENCE_CHUNK_SIZE", "1024"))
+    sentence_chunk_overlap = int(os.environ.get("ISKRA_SENTENCE_CHUNK_OVERLAP", "128"))
+    consolidate_min_chars = int(os.environ.get("ISKRA_CONSOLIDATE_MIN_CHARS", "512"))
+
     quiet = args.quiet
     paths = glob_index_paths(corpus_root, args.glob_pattern)
     if not quiet:
@@ -94,7 +98,7 @@ def main() -> None:
     def _on_document_start(total: int, idx_1: int, rel_path: str) -> None:
         if quiet:
             return
-        print(f"  [{idx_1}/{total}] 正在按 Markdown 标题切段  {rel_path}", flush=True)
+        print(f"  [{idx_1}/{total}] 正在切段  {rel_path}", flush=True)
 
     def _on_document_done(total: int, idx_1: int, rel_path: str, chunks: int) -> None:
         if quiet:
@@ -109,13 +113,16 @@ def main() -> None:
         glob_pattern=args.glob_pattern,
         paths=paths,
         header_path_separator=header_sep,
+        sentence_chunk_size=sentence_chunk_size,
+        sentence_chunk_overlap=sentence_chunk_overlap,
+        consolidate_min_chars=consolidate_min_chars,
         on_document_start=_on_document_start,
         on_document_done=_on_document_done,
     )
 
     if not quiet:
         print(
-            f"已开始按 Markdown 标题切段并写入 JSONL（每本篇内 chunk_index 从 0）→ {out}",
+            f"已开始切段并写入 JSONL（每本篇内 chunk_index 从 0）→ {out}",
             flush=True,
         )
 
