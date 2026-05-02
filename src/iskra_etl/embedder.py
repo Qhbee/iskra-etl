@@ -3,6 +3,9 @@
 ``normalize_embeddings=True`` 与 pgvector 余弦（``<=>``）惯例一致，维数须与
 ``iskra-engine/sql/001_init.sql`` 中 ``vector(N)`` 一致（当前为 1024 + Jina small retrieval）。
 
+**Jina retrieval**：送进 ``model.encode`` 前需要为每条文本拼接 ``Document: `` 前缀（**不改** JSONL 里的 ``chunk_text``），
+由环境变量 ``ISKRA_EMBED_DOCUMENT_PREFIX`` 控制；未设置时默认 ``Document: ``，设为空串则关闭。
+
 长句 + 大 batch 易 OOM；``encode_texts`` 在 CUDA 上默认 **遇 OOM 自动缩小本窗口 batch**（48→32→…），
 避免整 job 因个别窗口失败。
 """
@@ -108,8 +111,12 @@ def encode_texts(
     show_progress_bar: bool = False,
     adaptive_batch_on_oom: bool = True,
     min_batch_size: int = 4,
+    document_prefix: str | None = None,
 ) -> np.ndarray:
     """对 ``texts`` 批量编码，返回 ``float32``、形状 ``(len(texts), dim)``的二维数组。
+
+    ``document_prefix``：``None`` 时读 ``ISKRA_EMBED_DOCUMENT_PREFIX``（未设置则 ``"Document: "``）；仅影响传入模型的字符串，
+    不修改调用方传入的 ``texts`` 原列表。
 
     CUDA 上默认 **窗口式** 编码：遇 ``torch.cuda.OutOfMemoryError`` 时将 **当前窗口**
     的 batch 沿阶梯降级（如 48→32→24）或折半重试，成功后下一窗口再恢复为 ``batch_size``。
@@ -132,7 +139,9 @@ def encode_texts(
     target_bs = max(int(target_bs), 1)
     min_bs = max(1, int(min_batch_size))
 
-    texts_list = list(texts)
+    if document_prefix is None:
+        document_prefix = os.environ.get("ISKRA_EMBED_DOCUMENT_PREFIX", "Document: ")
+    texts_list = [f"{document_prefix}{t}" if document_prefix else t for t in texts]
     n = len(texts_list)
     use_adaptive = adaptive_batch_on_oom and _model_on_cuda(model)
     current_bs = target_bs
@@ -212,8 +221,9 @@ def embed_chunk_records(
     show_progress_bar: bool = False,
     adaptive_batch_on_oom: bool = True,
     min_batch_size: int = 4,
+    document_prefix: str | None = None,
 ) -> np.ndarray:
-    """与 ``records`` 顺序一致；文本取自 ``chunk_text``。"""
+    """与 ``records`` 顺序一致；文本取自 ``chunk_text``（仅编码时加 ``document_prefix``）。"""
     texts = [r.chunk_text for r in records]
     return encode_texts(
         texts,
@@ -223,6 +233,7 @@ def embed_chunk_records(
         show_progress_bar=show_progress_bar,
         adaptive_batch_on_oom=adaptive_batch_on_oom,
         min_batch_size=min_batch_size,
+        document_prefix=document_prefix,
     )
 
 
@@ -243,6 +254,7 @@ def iter_embed_chunk_records(
     show_progress_bar: bool = False,
     adaptive_batch_on_oom: bool = True,
     min_batch_size: int = 4,
+    document_prefix: str | None = None,
 ) -> Iterator[EmbeddedBatch]:
     """流式：按批编码，便于大 JSONL 控制内存。"""
     bs = batch_size if batch_size is not None else default_encode_batch_size()
@@ -258,6 +270,7 @@ def iter_embed_chunk_records(
                 show_progress_bar=show_progress_bar,
                 adaptive_batch_on_oom=adaptive_batch_on_oom,
                 min_batch_size=min_batch_size,
+                document_prefix=document_prefix,
             )
             yield EmbeddedBatch(records=list(buf), embeddings=embs)
             buf = []
@@ -270,6 +283,7 @@ def iter_embed_chunk_records(
             show_progress_bar=show_progress_bar,
             adaptive_batch_on_oom=adaptive_batch_on_oom,
             min_batch_size=min_batch_size,
+            document_prefix=document_prefix,
         )
         yield EmbeddedBatch(records=list(buf), embeddings=embs)
 
@@ -299,6 +313,7 @@ def embed_jsonl_batches(
     show_progress_bar: bool = False,
     adaptive_batch_on_oom: bool = True,
     min_batch_size: int = 4,
+    document_prefix: str | None = None,
 ) -> Iterator[EmbeddedBatch]:
     """自 JSONL 流式读出 ``ChunkRecord`` 并按批编码（不向量化 Iterator 整块驻留内存）。"""
     yield from iter_embed_chunk_records(
@@ -309,4 +324,5 @@ def embed_jsonl_batches(
         show_progress_bar=show_progress_bar,
         adaptive_batch_on_oom=adaptive_batch_on_oom,
         min_batch_size=min_batch_size,
+        document_prefix=document_prefix,
     )

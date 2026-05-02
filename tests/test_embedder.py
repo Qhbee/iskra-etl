@@ -19,7 +19,7 @@ class TestEmbedder(unittest.TestCase):
 
         model = load_sentence_model(model_id=_MINI_MODEL, device=resolve_embed_device("cpu"))
         texts = ["hello world", "sentence transformers", "numpy"]
-        out = encode_texts(texts, model, batch_size=8, normalize_embeddings=True)
+        out = encode_texts(texts, model, batch_size=8, normalize_embeddings=True, document_prefix="")
         self.assertEqual(out.shape, (3, model.get_embedding_dimension()))
         norms = np.linalg.norm(out, axis=1)
         np.testing.assert_allclose(norms, np.ones(3), atol=1e-4)
@@ -33,7 +33,7 @@ class TestEmbedder(unittest.TestCase):
             ChunkRecord("a/x.md", 0, "alpha"),
             ChunkRecord("a/x.md", 1, "beta gamma"),
         ]
-        embs = embed_chunk_records(recs, model, normalize_embeddings=False)
+        embs = embed_chunk_records(recs, model, normalize_embeddings=False, document_prefix="")
         self.assertEqual(embs.shape[0], 2)
         self.assertFalse(np.allclose(embs[0], embs[1], rtol=0, atol=1e-6))
 
@@ -64,8 +64,17 @@ class TestEmbedder(unittest.TestCase):
         self.assertEqual(rows[1].chunk_index, 1)
 
         model = load_sentence_model(model_id=_MINI_MODEL, device=resolve_embed_device("cpu"))
-        embs = embed_chunk_records(rows, model, batch_size=2)
+        embs = embed_chunk_records(rows, model, batch_size=2, document_prefix="")
         self.assertEqual(embs.shape, (2, model.get_embedding_dimension()))
+
+    def test_prefix_affects_embedding(self) -> None:
+        from iskra_etl.embedder import encode_texts, load_sentence_model, resolve_embed_device
+
+        model = load_sentence_model(model_id=_MINI_MODEL, device=resolve_embed_device("cpu"))
+        texts = ["hello world"]
+        raw = encode_texts(texts, model, document_prefix="", normalize_embeddings=False)
+        prefixed = encode_texts(texts, model, document_prefix="Document: ", normalize_embeddings=False)
+        self.assertFalse(np.allclose(raw[0], prefixed[0], rtol=0, atol=1e-5))
 
 
 class TestLowerBatchSize(unittest.TestCase):
@@ -102,6 +111,7 @@ class TestCudaSustainedEmbed(unittest.TestCase):
                 batch_size=48,
                 adaptive_batch_on_oom=True,
                 show_progress_bar=False,
+                document_prefix="",
             )
             self.assertEqual(out.shape, (48, model.get_embedding_dimension()))
 
