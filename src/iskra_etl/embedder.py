@@ -304,6 +304,21 @@ def iter_chunk_records_from_jsonl(path: Path | str) -> Iterator[ChunkRecord]:
             )
 
 
+def save_chunk_embeddings_npy(path: Path | str, embeddings: np.ndarray) -> None:
+    """将 ``embeddings`` 存为 ``.npy``（``float32``、二维 ``(N, D)``）。
+
+    与 ``iter_chunk_records_from_jsonl`` 产物的 **行顺序一一对应**：第 ``i`` 行 JSONL
+    对应 ``embeddings[i]``。供 ``export_parquet`` / :mod:`iskra_etl.exporter` 组装 Parquet。
+    读取侧见 :func:`iskra_etl.exporter.load_chunk_embeddings_npy`。"""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    arr = np.asarray(embeddings, dtype=np.float32)
+    if arr.ndim != 2:
+        msg = f"chunk embeddings 期望二维数组，shape={arr.shape}"
+        raise ValueError(msg)
+    np.save(p, arr, allow_pickle=False)
+
+
 def embed_jsonl_batches(
     path: Path | str,
     model: SentenceTransformer,

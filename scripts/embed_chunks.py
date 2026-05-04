@@ -1,7 +1,8 @@
-"""CLI：读取步 3 的 chunks.jsonl，Sentence-Transformers 批编码到内存（本步不写 Parquet）。
+"""CLI：读 ``chunks.jsonl`` → Sentence-Transformers 批编码 → 行对齐写出 ``.npy``。
 
-用于在 3060 上跑通向量维数、吞吐；``ISKRA_EMBED_BATCH_SIZE``（默认 48）；
-CUDA OOM 时自动缩小窗口 batch（如 48→32），避免整次任务失败。
+与 JSONL **第 i 行**对应 **``embeddings[i]``**；`export_parquet` 依此组装 ``chunks.parquet``。
+
+``ISKRA_EMBED_BATCH_SIZE``（默认 48）；CUDA OOM 时自动缩小窗口 batch（如 48→32），避免整次任务失败。。
 """
 
 from __future__ import annotations
@@ -25,10 +26,11 @@ def main() -> None:
         embed_chunk_records,
         iter_chunk_records_from_jsonl,
         load_sentence_model,
+        save_chunk_embeddings_npy,
         validate_embedding_dim,
     )
 
-    ap = argparse.ArgumentParser(description="chunks.jsonl → 内向量矩阵（不写盘）")
+    ap = argparse.ArgumentParser(description="chunks.jsonl → 行对齐 chunks_embeddings.npy")
     ap.add_argument(
         "--input",
         type=Path,
@@ -36,15 +38,26 @@ def main() -> None:
         help="chunks.jsonl（默认 env ISKRA_CHUNK_JSONL 或 out/chunks.jsonl）",
     )
     ap.add_argument(
+        "--output-npy",
+        type=Path,
+        default=None,
+        help="输出 .npy（默认 ISKRA_CHUNK_EMBEDDINGS_NPY 或 out/chunks_embeddings.npy）",
+    )
+    ap.add_argument(
         "--max-chunks",
         type=int,
         default=None,
-        help="只编码前 N 条（调试/冒烟）",
+        help="只编码前 N 条（与 export 时 --max-chunks 须一致）",
     )
     ap.add_argument(
         "--validate-dim",
         action="store_true",
         help="与 ISKRA_EMBED_DIM（默认 1024）核对模型输出维数",
+    )
+    ap.add_argument(
+        "--no-save-npy",
+        action="store_true",
+        help="只跑编码与统计，不写 .npy（冒烟）",
     )
     ap.add_argument(
         "--quiet",
@@ -62,6 +75,12 @@ def main() -> None:
     if not src.is_file():
         print(f"输入文件不存在: {src}", file=sys.stderr)
         sys.exit(2)
+
+    out_npy = args.output_npy
+    if out_npy is None:
+        raw_o = os.environ.get("ISKRA_CHUNK_EMBEDDINGS_NPY", "").strip()
+        out_npy = Path(raw_o) if raw_o else _ROOT / "out" / "chunks_embeddings.npy"
+    out_npy = out_npy.resolve()
 
     model = load_sentence_model()
     if args.validate_dim:
@@ -91,6 +110,11 @@ def main() -> None:
             f"OK  shape={tuple(embs.shape)}  L2(mean)={float(norms.mean()):.6f}  L2(min)={float(norms.min()):.6f}",
             flush=True,
         )
+
+    if not args.no_save_npy:
+        save_chunk_embeddings_npy(out_npy, embs)
+        if not args.quiet:
+            print(f"已写 {out_npy}", flush=True)
 
 
 if __name__ == "__main__":

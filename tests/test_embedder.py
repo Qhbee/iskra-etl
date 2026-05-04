@@ -76,6 +76,23 @@ class TestEmbedder(unittest.TestCase):
         prefixed = encode_texts(texts, model, document_prefix="Document: ", normalize_embeddings=False)
         self.assertFalse(np.allclose(raw[0], prefixed[0], rtol=0, atol=1e-5))
 
+    def test_save_chunk_embeddings_npy(self) -> None:
+        from iskra_etl.embedder import save_chunk_embeddings_npy
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            p_ok = root / "e.npy"
+            arr_f64 = np.arange(6, dtype=np.float64).reshape(2, 3)
+            save_chunk_embeddings_npy(p_ok, arr_f64)
+            got = np.load(p_ok, mmap_mode=None)
+            self.assertEqual(got.dtype, np.float32)
+            self.assertEqual(got.shape, (2, 3))
+            np.testing.assert_array_equal(got, arr_f64.astype(np.float32))
+
+            p_bad = root / "bad.npy"
+            with self.assertRaises(ValueError):
+                save_chunk_embeddings_npy(p_bad, np.zeros((2, 3, 4), dtype=np.float32))
+
 
 class TestLowerBatchSize(unittest.TestCase):
     def test_prefers_ladder_rung(self) -> None:
