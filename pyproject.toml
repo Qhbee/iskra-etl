@@ -8,9 +8,14 @@ dependencies = [
     "llama-index-core>=0.14.21",
     "numpy>=2.0",
     "pandas>=3.0.2",
+    "pgvector>=0.3",
+    "psycopg[binary]>=3.2",
     "pyarrow>=24.0.0",
     "python-dotenv>=1.0.0",
     "sentence-transformers>=5.0.0",
+    "sshtunnel>=0.4",
+    # sshtunnel 仍引用 paramiko.DSSKey；paramiko 4+ 已移除 DSS，会导致隧道初始化报错
+    "paramiko>=3.5,<4",
     "torch>=2.11.0",
 ]
 
