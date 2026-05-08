@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,9 @@ import psycopg
 from pgvector.psycopg import register_vector
 from sshtunnel import SSHTunnelForwarder
 
+
+DOCUMENT_COPY_BATCH_SIZE = 5_000
+CHUNK_COPY_BATCH_SIZE = 10_000
 
 @dataclass(frozen=True)
 class SshTunnelConfig:
@@ -206,7 +210,7 @@ def _copy_documents(cur: psycopg.Cursor, df: pd.DataFrame) -> int:
             "  … 本地已向 psycopg 的 COPY 流写完所有行；进度条只统计发送速度。正在等待服务器 PostgreSQL 结束 COPY 并落库（经 SSH 隧道刷盘，可能还需一会儿）…",
             flush=True,
         )
-    print("  document COPY 已在服务器侧完成。", flush=True)
+    print("  document 本批次 COPY 已在服务器侧完成。", flush=True)
     return n
 
 
@@ -247,8 +251,33 @@ def _copy_chunks(cur: psycopg.Cursor, df: pd.DataFrame, *, expect_dim: int) -> i
             "  … 本地已向 psycopg 的 COPY 流写完所有行；进度条只统计发送速度。正在等待服务器 PostgreSQL 结束 COPY 并落库（经 SSH 隧道刷盘，可能还需一会儿）…",
             flush=True,
         )
-    print("  chunk COPY 已在服务器侧完成。", flush=True)
+    print("  chunk 本批次 COPY 已在服务器侧完成。", flush=True)
     return n
+
+
+def _copy_dataframe_in_batches(
+    conn: psycopg.Connection,
+    df: pd.DataFrame,
+    *,
+    label: str,
+    batch_size: int,
+    copy_fn: Callable[[psycopg.Cursor, pd.DataFrame], int],
+) -> int:
+    if batch_size <= 0:
+        msg = f"{label} COPY 批大小必须为正数: {batch_size}"
+        raise ValueError(msg)
+
+    total = len(df)
+    copied = 0
+    for start in range(0, total, batch_size):
+        end = min(start + batch_size, total)
+        print(f"COPY {label} 批次 {start + 1}-{end}/{total} …", flush=True)
+        batch = df.iloc[start:end]
+        with conn.cursor() as cur:
+            copied += copy_fn(cur, batch)
+        conn.commit()
+        print(f"  {label} 批次已提交：{copied}/{total}", flush=True)
+    return copied
 
 
 def load_parquets_via_tunnel(
@@ -302,12 +331,27 @@ def load_parquets_via_tunnel(
                     conn.commit()
                     print("TRUNCATE 已提交。", flush=True)
 
-                print(f"COPY document（{len(df_doc)} 行）…", flush=True)
-                n_doc = _copy_documents(cur, df_doc)
+            print(f"COPY document（{len(df_doc)} 行, 每批 {DOCUMENT_COPY_BATCH_SIZE}）…", flush=True)
+            n_doc = _copy_dataframe_in_batches(
+                conn,
+                df_doc,
+                label="document",
+                batch_size=DOCUMENT_COPY_BATCH_SIZE,
+                copy_fn=_copy_documents,
+            )
+            print("document 已全部提交。", flush=True)
 
-                print(f"COPY chunk（{len(df_chunk)} 行, dim={exp_dim}）…", flush=True)
-                n_chunk = _copy_chunks(cur, df_chunk, expect_dim=exp_dim)
+            print(f"COPY chunk（{len(df_chunk)} 行, dim={exp_dim}, 每批 {CHUNK_COPY_BATCH_SIZE}）…", flush=True)
+            n_chunk = _copy_dataframe_in_batches(
+                conn,
+                df_chunk,
+                label="chunk",
+                batch_size=CHUNK_COPY_BATCH_SIZE,
+                copy_fn=partial(_copy_chunks, expect_dim=exp_dim),
+            )
+            print("chunk 已全部提交。", flush=True)
 
+            with conn.cursor() as cur:
                 print("对齐 serial 序列 …", flush=True)
                 _setval_sequences(cur)
             conn.commit()
