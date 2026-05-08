@@ -141,6 +141,28 @@ def _setval_sequences(cur: psycopg.Cursor) -> None:
     )
 
 
+def _iter_copy_rows(df: pd.DataFrame, *, desc: str) -> Iterator[Any]:
+    """``df.itertuples(index=False)`` 外包 ``tqdm``；无 tqdm 包则裸迭代。"""
+    total = len(df)
+    base = df.itertuples(index=False)
+    if total == 0:
+        yield from ()
+        return
+    try:
+        from tqdm.auto import tqdm
+
+        yield from tqdm(
+            base,
+            total=total,
+            desc=desc,
+            unit="行",
+            mininterval=0.2,
+            dynamic_ncols=True,
+        )
+    except ImportError:
+        yield from base
+
+
 def _nullable_str(v: Any) -> str | None:
     if v is None:
         return None
@@ -164,7 +186,7 @@ def _copy_documents(cur: psycopg.Cursor, df: pd.DataFrame) -> int:
     n = 0
     sql = """COPY document (id, rel_path, title, book, full_text, content_sha256) FROM STDIN"""
     with cur.copy(sql) as copy:
-        for row in df.itertuples(index=False):
+        for row in _iter_copy_rows(df, desc="COPY document"):
             copy.write_row(
                 (
                     int(row.id),
@@ -176,6 +198,11 @@ def _copy_documents(cur: psycopg.Cursor, df: pd.DataFrame) -> int:
                 )
             )
             n += 1
+        print(
+            "  … 本地已向 psycopg 的 COPY 流写完所有行；进度条只统计发送速度。正在等待服务器 PostgreSQL 结束 COPY 并落库（经 SSH 隧道刷盘，可能还需一会儿）…",
+            flush=True,
+        )
+    print("  document COPY 已在服务器侧完成。", flush=True)
     return n
 
 
@@ -207,11 +234,16 @@ def _copy_chunks(cur: psycopg.Cursor, df: pd.DataFrame, *, expect_dim: int) -> i
     n = 0
     sql = """COPY chunk (document_id, chunk_index, text, embedding) FROM STDIN"""
     with cur.copy(sql) as copy:
-        for row in df.itertuples(index=False):
+        for row in _iter_copy_rows(df, desc="COPY chunk"):
             emb = _embedding_to_list(row.embedding, expect_dim=expect_dim)
             lit = _embedding_to_pgvector_copy_literal(emb)
             copy.write_row((int(row.document_id), int(row.chunk_index), str(row.text), lit))
             n += 1
+        print(
+            "  … 本地已向 psycopg 的 COPY 流写完所有行；进度条只统计发送速度。正在等待服务器 PostgreSQL 结束 COPY 并落库（经 SSH 隧道刷盘，可能还需一会儿）…",
+            flush=True,
+        )
+    print("  chunk COPY 已在服务器侧完成。", flush=True)
     return n
 
 
@@ -224,7 +256,7 @@ def load_parquets_via_tunnel(
     truncate: bool = False,
     expect_embedding_dim: int | None = None,
 ) -> tuple[int, int]:
-    """经 SSH 隧道打开连接，``COPY`` 两个 Parquet；返回 ``(document 行数, chunk 行数)``。"""
+    """经 SSH 隧道打开连接，``COPY`` 两个 Parquet；``COPY`` 循环带 ``tqdm`` 进度条；返回 ``(document 行数, chunk 行数)``。"""
     exp_dim = expect_embedding_dim
     if exp_dim is None:
         raw = os.environ.get("ISKRA_EMBED_DIM", "1024").strip()
