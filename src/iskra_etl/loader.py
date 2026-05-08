@@ -123,7 +123,11 @@ def _db_nonempty(cur: psycopg.Cursor) -> bool:
 
 
 def _truncate_tables(cur: psycopg.Cursor) -> None:
+    """清空 document/chunk 并重置两表 ``bigserial`` 序列（下一条隐式 id 从 1 起）。"""
     cur.execute("TRUNCATE document RESTART IDENTITY CASCADE")
+    # RESTART IDENTITY 已对参与 TRUNCATE 的表都重置序列；不确定的话可以再 setval 一次，避免极少数清空下序列未对齐（一般不需要）
+    # cur.execute("SELECT setval(pg_get_serial_sequence('document', 'id'), 1, false)")
+    # cur.execute("SELECT setval(pg_get_serial_sequence('chunk', 'id'), 1, false)")
 
 
 def _setval_sequences(cur: psycopg.Cursor) -> None:
@@ -295,6 +299,8 @@ def load_parquets_via_tunnel(
                         raise RuntimeError(msg)
                     print("TRUNCATE document RESTART IDENTITY CASCADE …", flush=True)
                     _truncate_tables(cur)
+                    conn.commit()
+                    print("TRUNCATE 已提交。", flush=True)
 
                 print(f"COPY document（{len(df_doc)} 行）…", flush=True)
                 n_doc = _copy_documents(cur, df_doc)
