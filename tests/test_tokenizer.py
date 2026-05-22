@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from iskra_etl.tokenizer import (
-    DEFAULT_STOPWORDS,
+    resolve_stopwords,
     load_chunk_texts_from_jsonl,
     tokenize_for_search,
     tokenize_jsonl_to_txt,
@@ -22,9 +22,15 @@ def _read_tokenized_txt_lines(path: Path) -> list[str]:
 
 
 class TestTokenizer(unittest.TestCase):
+    def test_resolve_stopwords_loads_cn_file(self) -> None:
+        sw = resolve_stopwords()
+        self.assertGreater(len(sw), 500)
+        self.assertLess(len(sw), 1000)
+        self.assertIn("的", sw)
+
     def test_tokenize_for_search_removes_stopwords(self) -> None:
         raw = "马克思主义哲学的基本问题"
-        out = tokenize_for_search(raw, stopwords=DEFAULT_STOPWORDS)
+        out = tokenize_for_search(raw, stopwords=resolve_stopwords())
         self.assertNotIn("的", out.split())
         self.assertIn("马克思主义", out.split())
         self.assertIn("哲学", out.split())

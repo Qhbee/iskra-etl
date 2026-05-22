@@ -1,5 +1,8 @@
 """Tokenizer：中文块文本 jieba 分词 + 停用词过滤，供 ``tsvector`` / 混合检索离线链路。
 
+**停用词**：首次调用 :func:`resolve_stopwords` 时从 GitHub 拉取 `goto456/stopwords` 的 ``cn_stopwords.txt``
+  写入 ``.cache/cn_stopwords.txt`` 供离线复用；删该文件可强制重新下载。
+
 **分词策略（索引与 query 配对，勿混用）**
 
 - **离线 Document**（本模块 ETL 文档入库端）：``tokenize_for_search`` → ``jieba.cut_for_search``（搜索引擎模式，长词再切子词，提高召回）。
@@ -15,39 +18,18 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterator
+from functools import lru_cache
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlretrieve
 
 import jieba
 
 _jieba_warmed: bool = False
 
-# 停用词表：按语料直接改本集合即可（索引与 query 须保持一致）。
-DEFAULT_STOPWORDS: frozenset[str] = frozenset(
-    {
-        "的", "地", "得",
-        "了", "着", "就", "都",
-        "人", "自己", "你", "我", "他", "她", "它", "我们", "你们", "他们", "她们", "它们",
-        "是", "不", "有", "没有",
-        "一个",
-        "在", "到", "去",
-        "说", "要", "会",
-        "和", "与", "及", "或", "等",
-        "而", "但",
-        "为", "以", "于", "之", "其", "所", "被", "把", "让", "给",
-        "从", "对", "向", "由",
-        "能", "可", "将", "已",
-        "也", "又", "再", "还",
-        "更", "最", "很", "非常",
-        "已经", "正在", "刚才",
-        "因为", "所以",
-        "如果", "假设", "要是", "倘若",
-        "虽然", "即使", "但是", "然而",
-        "并且", "以及", "或者", "不是",
-        "这", "那", "这个", "那个", "这些", "那些", "这么", "那么", "这样", "那样",
-        "什么", "怎么", "怎样", "如何", "哪里", "哪个", "哪些", "多少", "为什么",
-        "吗", "呢", "吧", "啊", "呀", "哦", "嗯", "哪",
-    }
-)
+# goto456 整理的中文停用词表。
+CN_STOPWORDS_URL = "https://raw.githubusercontent.com/goto456/stopwords/master/cn_stopwords.txt"
+CN_STOPWORDS_CACHE_PATH = Path(__file__).resolve().parents[2] / ".cache" / "cn_stopwords.txt"
 
 
 def tokenize_jsonl_to_txt(
@@ -153,7 +135,7 @@ def tokenize_for_search(
     if not normalized_text:
         return ""
 
-    sw = DEFAULT_STOPWORDS if stopwords is None else stopwords
+    sw = resolve_stopwords() if stopwords is None else stopwords
     tokens: list[str] = []
     for tok in jieba.cut_for_search(normalized_text, HMM=True):
         t = tok.strip()
@@ -161,3 +143,31 @@ def tokenize_for_search(
             continue
         tokens.append(t)
     return " ".join(tokens)
+
+
+# tokenize_for_search() 每处理一块都会调一次 resolve_stopwords()
+# @lru_cache(maxsize=1) 可以把停用词集合的计算结果缓存起来，避免每次都重新加载。（最多保留 1 组 缓存条目，带参数的函数，maxsize 才需要更大。）
+@lru_cache(maxsize=1)
+def resolve_stopwords() -> frozenset[str]:
+    """停用词集合：GitHub 拉取 + ``.cache/cn_stopwords.txt`` 缓存（进程内 ``lru_cache``）。"""
+    _get_and_cache_stopwords()
+    with CN_STOPWORDS_CACHE_PATH.open(encoding="utf-8") as f:
+        lines = f.readlines()
+        words: set[str] = set()
+        for line in lines:
+            word = line.strip()
+            if word:
+                words.add(word)
+        return frozenset(words)
+
+
+def _get_and_cache_stopwords() -> None:
+    """本地 ``CN_STOPWORDS_CACHE_PATH`` 已缓存 cn_stopwords.txt 则跳过；否则从 GitHub 下载文件到该路径。"""
+    if CN_STOPWORDS_CACHE_PATH.is_file():
+        return
+    CN_STOPWORDS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        urlretrieve(CN_STOPWORDS_URL, CN_STOPWORDS_CACHE_PATH)
+    except URLError as exc:
+        msg = f"无法从 GitHub 下载该中文停用词表: {CN_STOPWORDS_URL}"
+        raise OSError(msg) from exc
