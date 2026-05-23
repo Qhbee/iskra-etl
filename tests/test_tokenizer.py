@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from iskra_etl.tokenizer import (
+    EXTRA_STOPWORDS,
     resolve_stopwords,
     load_chunk_texts_from_jsonl,
     tokenize_for_search,
@@ -24,9 +25,40 @@ def _read_tokenized_txt_lines(path: Path) -> list[str]:
 class TestTokenizer(unittest.TestCase):
     def test_resolve_stopwords_loads_cn_file(self) -> None:
         sw = resolve_stopwords()
-        self.assertGreater(len(sw), 500)
-        self.assertLess(len(sw), 1000)
+        self.assertGreater(len(sw), 1000)
+        self.assertLess(len(sw), 1500)
         self.assertIn("的", sw)
+        self.assertIn("β", EXTRA_STOPWORDS)
+        self.assertIn("ü", EXTRA_STOPWORDS)
+        self.assertIn("ё", EXTRA_STOPWORDS)
+
+    def test_extra_stopwords_filters_markdown_heading_tokens(self) -> None:
+        out = tokenize_for_search("### 凡例", stopwords=EXTRA_STOPWORDS)
+        parts = out.split()
+        self.assertNotIn("###", parts)
+        self.assertIn("凡例", parts)
+
+    def test_extra_stopwords_includes_fullwidth_alnum(self) -> None:
+        self.assertIn("Ａ", EXTRA_STOPWORDS)
+        self.assertIn("ａ", EXTRA_STOPWORDS)
+        self.assertIn("０", EXTRA_STOPWORDS)
+        self.assertIn("９", EXTRA_STOPWORDS)
+        out = tokenize_for_search("版本ＩＩ", stopwords=EXTRA_STOPWORDS)
+        for tok in out.split():
+            self.assertNotIn(tok, "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ")
+            self.assertNotIn(tok, "ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ")
+            self.assertNotIn(tok, "０１２３４５６７８９")
+
+    def test_extra_stopwords_includes_circled_roman_and_script_digits(self) -> None:
+        for ch in "①⑤⑩ⅠⅤⅩ⁰₀α":
+            self.assertIn(ch, EXTRA_STOPWORDS, msg=ch)
+        out = tokenize_for_search("第①条脚注", stopwords=EXTRA_STOPWORDS)
+        parts = out.split()
+        self.assertNotIn("①", parts)
+
+    def test_resolve_stopwords_includes_extra(self) -> None:
+        sw = resolve_stopwords()
+        self.assertTrue(EXTRA_STOPWORDS <= sw)
 
     def test_tokenize_for_search_removes_stopwords(self) -> None:
         raw = "马克思主义哲学的基本问题"
