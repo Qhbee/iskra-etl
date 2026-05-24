@@ -3,8 +3,8 @@
 ``document_id`` 与语料下 ``glob`` 命中文件的 **排序顺序** 一致（默认与 :func:`iskra_etl.splitter.glob_index_paths` 相同），
 从 ``id_start`` 起连续递增，供服务器 ``COPY`` 时插入 ``document.id``，并在 ``chunk`` 侧直接使用同一 ``document_id``。
 
-**chunks.parquet** 推荐由 **``chunks.jsonl`` + 行对齐的 ``chunks_embeddings.npy``** 组装（不在此模块加载 ST）；
-:func:`write_chunks_parquet_from_jsonl_and_npy` 负责校验行数与维数。
+**chunks.parquet** 推荐由 **``chunks.jsonl`` + 行对齐的 ``chunks_embeddings.npy`` + ``chunks_tokenized.txt``** 组装（不在此模块加载 ST）；
+:func:`write_chunks_parquet_from_jsonl_and_npy_and_txt` 负责校验行数与维数。
 """
 from __future__ import annotations
 
@@ -31,6 +31,16 @@ def load_chunk_embeddings_npy(path: Path | str, *, mmap_mode: str | None = "r") 
     默认 ``mmap_mode='r'``，大文件可减少 resident 内存；需要可写副本时传 ``mmap_mode=None``。
     """
     return np.load(path, mmap_mode=mmap_mode)
+
+
+def read_chunks_tokenized_txt(path: Path | str) -> list[str]:
+    """读 ``chunks_tokenized.txt``：每行一条块的分词串（与 JSONL / ``.npy`` 行序一致）。"""
+    p = Path(path)
+    lines: list[str] = []
+    with p.open(encoding="utf-8") as f:
+        for line in f:
+            lines.append(line.rstrip("\n\r"))
+    return lines
 
 
 def default_document_id_start() -> int:
@@ -156,6 +166,7 @@ def write_chunks_parquet(
     document_id_by_rel: dict[str, int],
     records: Sequence[ChunkRecord],
     embeddings: np.ndarray,
+    tokenized_texts: Sequence[str],
     path: Path,
     expect_dim: int | None = None,
 ) -> None:
@@ -164,6 +175,12 @@ def write_chunks_parquet(
         raise ValueError(msg)
     if embeddings.ndim != 2:
         msg = f"embeddings 期望二维，shape={embeddings.shape}"
+        raise ValueError(msg)
+    if len(tokenized_texts) != len(records):
+        msg = (
+            f"分词行数 {len(tokenized_texts)} 与块数 {len(records)} 不一致；"
+            "须与 chunks_tokenized.txt 行序对齐。"
+        )
         raise ValueError(msg)
     dim = int(embeddings.shape[1])
     if expect_dim is not None and dim != expect_dim:
@@ -192,6 +209,7 @@ def write_chunks_parquet(
             "chunk_index": [int(r.chunk_index) for r in records],
             "text": [r.chunk_text for r in records],
             "embedding": emb_list,
+            "tokenized_text": list(tokenized_texts),
         }
     )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -212,30 +230,39 @@ def load_chunk_records_from_jsonl(
     return records
 
 
-def write_chunks_parquet_from_jsonl_and_npy(
+def write_chunks_parquet_from_jsonl_and_npy_and_txt(
     *,
     chunks_jsonl: Path | str,
     embeddings_npy: Path | str,
+    tokenized_txt: Path | str,
     document_id_by_rel: dict[str, int],
     path: Path,
     expect_dim: int | None = None,
     max_chunks: int | None = None,
     mmap_npy: bool = True,
 ) -> tuple[int, int]:
-    """读 **行对齐** 的 JSONL + ``float32`` ``(N, D)`` 向量文件，写 ``chunks.parquet``。
+    """读 **行对齐** 的 JSONL + embeddings 的 npy + tokenized 的 txt，写 ``chunks.parquet``。
 
     :return: ``(块数 N, 维数 D)``
     """
     records = load_chunk_records_from_jsonl(chunks_jsonl, max_chunks=max_chunks)
     mmap_mode = "r" if mmap_npy else None
     embeddings = load_chunk_embeddings_npy(embeddings_npy, mmap_mode=mmap_mode)
+    tokenized_texts = read_chunks_tokenized_txt(tokenized_txt)
 
     n_rec = len(records)
     n_emb = int(embeddings.shape[0])
+    n_tok = len(tokenized_texts)
     if n_rec != n_emb:
         msg = (
             f"JSONL 块数 {n_rec} 与 embeddings 行数 {n_emb} 不一致；"
             "须用同次 embed 产物或相同 --max-chunks。"
+        )
+        raise ValueError(msg)
+    if n_rec != n_tok:
+        msg = (
+            f"chunks_tokenized.txt 行数 {n_tok} 与 JSONL 块数 {n_rec} 不一致；"
+            "须用同次 tokenize 产物或相同 --max-chunks。"
         )
         raise ValueError(msg)
 
@@ -243,6 +270,7 @@ def write_chunks_parquet_from_jsonl_and_npy(
         document_id_by_rel=document_id_by_rel,
         records=records,
         embeddings=np.asarray(embeddings, dtype=np.float32),
+        tokenized_texts=tokenized_texts,
         path=path,
         expect_dim=expect_dim,
     )

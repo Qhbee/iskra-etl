@@ -14,9 +14,10 @@ from iskra_etl.exporter import (
     document_id_by_rel_path,
     document_row_for_path,
     load_chunk_embeddings_npy,
+    read_chunks_tokenized_txt,
     title_book_from_raw_markdown,
     write_chunks_parquet,
-    write_chunks_parquet_from_jsonl_and_npy,
+    write_chunks_parquet_from_jsonl_and_npy_and_txt,
     write_documents_parquet,
 )
 from iskra_etl.splitter import split_corpus_to_chunks
@@ -82,6 +83,7 @@ class TestExporter(unittest.TestCase):
                 document_id_by_rel=idmap,
                 records=records,
                 embeddings=emb,
+                tokenized_texts=[f"tok {i}" for i in range(n)],
                 path=out,
                 expect_dim=16,
             )
@@ -90,7 +92,7 @@ class TestExporter(unittest.TestCase):
         self.assertTrue((df["document_id"] == idmap["b/index.md"]).all())
         self.assertEqual(list(df["chunk_index"].values), [r.chunk_index for r in records])
 
-    def test_write_chunks_parquet_from_jsonl_and_npy(self) -> None:
+    def test_write_chunks_parquet_from_jsonl_and_npy_and_txt(self) -> None:
         import json
 
         def _md(name: str) -> str:
@@ -121,10 +123,17 @@ class TestExporter(unittest.TestCase):
             emb = np.random.randn(n, 16).astype(np.float32)
             np.save(npyp, emb, allow_pickle=False)
 
+            tok_path = Path(td) / "tok.txt"
+            tok_path.write_text(
+                "\n".join(f"tok {i}" for i in range(n)) + ("\n" if n else ""),
+                encoding="utf-8",
+            )
+
             outp = Path(td) / "ch.parquet"
-            write_chunks_parquet_from_jsonl_and_npy(
+            write_chunks_parquet_from_jsonl_and_npy_and_txt(
                 chunks_jsonl=jpath,
                 embeddings_npy=npyp,
+                tokenized_txt=tok_path,
                 document_id_by_rel=idmap,
                 path=outp,
                 expect_dim=16,
@@ -132,6 +141,8 @@ class TestExporter(unittest.TestCase):
             )
             df = pd.read_parquet(outp)
         self.assertEqual(len(df), n)
+        self.assertIn("tokenized_text", df.columns)
+        self.assertEqual(df.iloc[0]["tokenized_text"], "tok 0")
 
     def test_jsonl_npy_row_mismatch_raises(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -139,15 +150,35 @@ class TestExporter(unittest.TestCase):
             with jpath.open("w", encoding="utf-8") as f:
                 f.write('{"rel_path":"a/x.md","chunk_index":0,"chunk_text":"x"}\n')
             np.save(Path(td) / "b.npy", np.zeros((2, 4), dtype=np.float32), allow_pickle=False)
+            (Path(td) / "t.txt").write_text("a\nb\n", encoding="utf-8")
 
             with self.assertRaises(ValueError):
-                write_chunks_parquet_from_jsonl_and_npy(
+                write_chunks_parquet_from_jsonl_and_npy_and_txt(
                     chunks_jsonl=jpath,
                     embeddings_npy=Path(td) / "b.npy",
+                    tokenized_txt=Path(td) / "t.txt",
                     document_id_by_rel={"a/x.md": 1},
                     path=Path(td) / "o.parquet",
                     mmap_npy=False,
                 )
+
+    def test_write_chunks_parquet_with_tokenized_texts(self) -> None:
+        from iskra_etl.splitter import ChunkRecord
+
+        records = [ChunkRecord("a/x.md", 0, "hello"), ChunkRecord("a/x.md", 1, "world")]
+        emb = np.random.randn(2, 8).astype(np.float32)
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "c.parquet"
+            write_chunks_parquet(
+                document_id_by_rel={"a/x.md": 1},
+                records=records,
+                embeddings=emb,
+                path=out,
+                expect_dim=8,
+                tokenized_texts=["你 好", "世 界"],
+            )
+            df = pd.read_parquet(out)
+        self.assertEqual(list(df["tokenized_text"]), ["你 好", "世 界"])
 
     def test_write_documents_roundtrip(self) -> None:
         raw = "---\ntitle: T\n---\n\nbody"
@@ -163,6 +194,11 @@ class TestExporter(unittest.TestCase):
         self.assertEqual(int(df.iloc[0]["id"]), 1)
         self.assertEqual(df.iloc[0]["title"], "T")
 
+    def test_read_chunks_tokenized_txt(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "t.txt"
+            p.write_text("马克思主义 哲学\n\n列宁 全集\n", encoding="utf-8")
+            self.assertEqual(read_chunks_tokenized_txt(p), ["马克思主义 哲学", "", "列宁 全集"])
 
 if __name__ == "__main__":
     unittest.main()

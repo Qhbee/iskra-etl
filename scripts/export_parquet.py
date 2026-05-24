@@ -1,8 +1,9 @@
 """组装 ``documents.parquet`` + ``chunks.parquet``。
 
 ``documents.parquet`` 由读原始语料生成；
-``chunks.parquet`` 由 ``chunks.jsonl`` + 行对齐的``chunks_embeddings.npy`` 组装（**不**加载 Sentence-Transformers）。
-切块文件由 ``split_chunks.py`` 写出，向量文件由 ``embed_chunks.py`` 写出；jsonl 与 .npy 必须同一顺序、同一块数。
+``chunks.parquet`` 由 ``chunks.jsonl`` + 行对齐的 ``chunks_embeddings.npy`` + ``chunks_tokenized.txt`` 组装（**不**加载 Sentence-Transformers）。
+切块文件由 ``split_chunks.py`` 写出，向量文件由 ``embed_chunks.py`` 写出，分词文件由 ``tokenize_chunks.py`` 写出；
+切块的 .jsonl 与 向量的 .npy 与分词的 .txt 必须同一顺序、同一块数。
 """
 
 from __future__ import annotations
@@ -23,12 +24,12 @@ def main() -> None:
         build_documents_rows,
         default_document_id_start,
         document_id_by_rel_path,
-        write_chunks_parquet_from_jsonl_and_npy,
+        write_chunks_parquet_from_jsonl_and_npy_and_txt,
         write_documents_parquet,
     )
 
     ap = argparse.ArgumentParser(
-        description="导出 documents.parquet + chunks.parquet（chunks 来自 JSONL + 行对齐 .npy）",
+        description="导出 documents.parquet + chunks.parquet（chunks 来自 JSONL + 行对齐 .npy + 行对齐 .txt）",
     )
     ap.add_argument(
         "--corpus-root",
@@ -47,6 +48,12 @@ def main() -> None:
         type=Path,
         default=None,
         help="行对齐向量 .npy（默认 ISKRA_CHUNK_EMBEDDINGS_NPY 或 out/chunks_embeddings.npy）",
+    )
+    ap.add_argument(
+        "--tokenized-txt",
+        type=Path,
+        default=None,
+        help="行对齐分词 .txt（默认 ISKRA_CHUNK_TOKENIZED_TXT 或 out/chunks_tokenized.txt）",
     )
     ap.add_argument(
         "--documents-parquet",
@@ -70,7 +77,7 @@ def main() -> None:
         "--max-chunks",
         type=int,
         default=None,
-        help="仅组装前 N 条（须与生成 .npy 时所用 N 一致）",
+        help="仅组装前 N 条（jsonl 只读前 N 行；须与生成 .npy 和 .txt 时所用 N 一致）",
     )
     ap.add_argument(
         "--skip-validate-dim",
@@ -112,6 +119,15 @@ def main() -> None:
         print(f"embeddings .npy 不存在: {npy}（请先运行 scripts/embed_chunks.py）", file=sys.stderr)
         sys.exit(2)
 
+    txt = args.tokenized_txt
+    if txt is None:
+        raw_t = os.environ.get("ISKRA_CHUNK_TOKENIZED_TXT", "").strip()
+        txt = Path(raw_t) if raw_t else _ROOT / "out" / "chunks_tokenized.txt"
+    txt = txt.resolve()
+    if not txt.is_file():
+        print(f"chunks_tokenized.txt 不存在: {txt}（请先运行 scripts/tokenize_chunks.py）", file=sys.stderr)
+        sys.exit(2)
+
     pq_doc = args.documents_parquet
     if pq_doc is None:
         raw_d = os.environ.get("ISKRA_DOCUMENTS_PARQUET", "").strip()
@@ -141,9 +157,10 @@ def main() -> None:
         expect_dim = int(dim_raw)
 
     try:
-        n, dim = write_chunks_parquet_from_jsonl_and_npy(
+        n, dim = write_chunks_parquet_from_jsonl_and_npy_and_txt(
             chunks_jsonl=jsl,
             embeddings_npy=npy,
+            tokenized_txt=txt,
             document_id_by_rel=id_by_rel,
             path=pq_chunk,
             expect_dim=expect_dim,
