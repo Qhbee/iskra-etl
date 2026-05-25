@@ -25,8 +25,8 @@ from iskra_etl.splitter import (
 )
 
 
-def load_chunk_embeddings_npy(path: Path | str, *, mmap_mode: str | None = "r") -> np.ndarray:
-    """加载与 ``chunks.jsonl`` **行对齐**的向量矩阵（``float32``、``(N, D)``）。
+def load_chunks_embeddings_npy(path: Path | str, *, mmap_mode: str | None = "r") -> np.ndarray:
+    """加载 ``chunks_embeddings.npy`` ：与 ``chunks.jsonl`` **行对齐**的向量矩阵（``float32``、``(N, D)``）。
 
     默认 ``mmap_mode='r'``，大文件可减少 resident 内存；需要可写副本时传 ``mmap_mode=None``。
     """
@@ -247,7 +247,7 @@ def write_chunks_parquet_from_jsonl_and_npy_and_txt(
     """
     records = load_chunk_records_from_jsonl(chunks_jsonl, max_chunks=max_chunks)
     mmap_mode = "r" if mmap_npy else None
-    embeddings = load_chunk_embeddings_npy(embeddings_npy, mmap_mode=mmap_mode)
+    embeddings = load_chunks_embeddings_npy(embeddings_npy, mmap_mode=mmap_mode)
     tokenized_texts = read_chunks_tokenized_txt(tokenized_txt)
 
     n_rec = len(records)

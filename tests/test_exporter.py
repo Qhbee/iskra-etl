@@ -13,7 +13,7 @@ from iskra_etl.exporter import (
     build_documents_rows,
     document_id_by_rel_path,
     document_row_for_path,
-    load_chunk_embeddings_npy,
+    load_chunks_embeddings_npy,
     read_chunks_tokenized_txt,
     title_book_from_raw_markdown,
     write_chunks_parquet,
@@ -24,12 +24,12 @@ from iskra_etl.splitter import split_corpus_to_chunks
 
 
 class TestExporter(unittest.TestCase):
-    def test_load_chunk_embeddings_npy(self) -> None:
+    def test_load_chunks_embeddings_npy(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "e.npy"
             arr = np.arange(12, dtype=np.float32).reshape(3, 4)
             np.save(p, arr, allow_pickle=False)
-            got = np.asarray(load_chunk_embeddings_npy(p, mmap_mode=None), dtype=np.float32)
+            got = np.asarray(load_chunks_embeddings_npy(p, mmap_mode=None), dtype=np.float32)
             np.testing.assert_array_equal(got, arr)
 
     def test_document_id_order_follows_sorted_glob(self) -> None:
@@ -119,9 +119,9 @@ class TestExporter(unittest.TestCase):
                         )
                         + "\n",
                     )
-            npyp = Path(td) / "e.npy"
+            npy_path = Path(td) / "e.npy"
             emb = np.random.randn(n, 16).astype(np.float32)
-            np.save(npyp, emb, allow_pickle=False)
+            np.save(npy_path, emb, allow_pickle=False)
 
             tok_path = Path(td) / "tok.txt"
             tok_path.write_text(
@@ -132,7 +132,7 @@ class TestExporter(unittest.TestCase):
             outp = Path(td) / "ch.parquet"
             write_chunks_parquet_from_jsonl_and_npy_and_txt(
                 chunks_jsonl=jpath,
-                embeddings_npy=npyp,
+                embeddings_npy=npy_path,
                 tokenized_txt=tok_path,
                 document_id_by_rel=idmap,
                 path=outp,
