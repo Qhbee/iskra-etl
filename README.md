@@ -33,25 +33,25 @@
 flowchart TB
   corpus(["iskra-data/**/*.md"])
   jsonl["chunks.jsonl"]
-  npy["chunks_embeddings.npy"]
-  txt["chunks_tokenized.txt"]
+  embNpy["chunks_embeddings.npy"]
+  tokTxt["chunks_tokenized.txt"]
   docsPq["documents.parquet"]
   exportJoin(("﻿"))
   chunksPq["chunks.parquet"]
   loadJoin(("﻿"))
   db[("PostgreSQL: document + chunk")]
 
-  corpus -->|"split_chunks.py (splitter)"| jsonl
-  jsonl -->|"embed_chunks.py (embedder)"| npy
-  jsonl -->|"tokenize_chunks.py (tokenizer)"| txt
-  corpus -->|"export_parquet.py (exporter)"| docsPq
+  corpus -->|"① split_chunks.py (splitter)"| jsonl
+  jsonl -->|"② embed_chunks.py (embedder)"| embNpy
+  jsonl -->|"③ tokenize_chunks.py (tokenizer)"| tokTxt
+  corpus -->|"④ export_parquet.py (exporter)"| docsPq
   jsonl --> exportJoin
-  npy --> exportJoin
-  txt --> exportJoin
-  exportJoin -->|"export_parquet.py (exporter)"| chunksPq
+  embNpy --> exportJoin
+  tokTxt --> exportJoin
+  exportJoin -->|"④ export_parquet.py (exporter)"| chunksPq
   docsPq --> loadJoin
   chunksPq --> loadJoin
-  loadJoin -->|"load_to_db.py (loader)"| db
+  loadJoin -->|"⑤ load_to_db.py (loader)"| db
 ```
 
 **注意**：`chunks.jsonl` 与 `chunks_embeddings.npy` 与 `chunks_tokenized.txt` 必须同一次切块、同一次处理，行数一致；改切块后需重跑 embed、tokenize 及之后各步。
