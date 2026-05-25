@@ -8,6 +8,7 @@ import numpy as np
 from iskra_etl.loader import (
     _embedding_to_list,
     _embedding_to_pgvector_copy_literal,
+    _tokenized_to_tsvector_copy_literal,
     build_conninfo_localhost,
     PgConnConfig,
 )
@@ -27,6 +28,18 @@ class TestLoaderHelpers(unittest.TestCase):
         self.assertTrue(s.startswith("["), s)
         self.assertTrue(s.endswith("]"), s)
         self.assertNotIn("{", s)
+
+    def test_tokenized_to_tsvector_copy_literal(self) -> None:
+        lit = _tokenized_to_tsvector_copy_literal("马克思主义 哲学 基本 问题")
+        self.assertIn("'马克思主义':1", lit)
+        self.assertIn("'哲学':2", lit)
+        self.assertIn("'基本':3", lit)
+        self.assertIn("'问题':4", lit)
+        self.assertEqual(_tokenized_to_tsvector_copy_literal(""), "")
+
+    def test_tokenized_to_tsvector_escapes_single_quote(self) -> None:
+        lit = _tokenized_to_tsvector_copy_literal("it's")
+        self.assertIn("'it''s':1", lit)
 
     def test_build_conninfo_localhost(self) -> None:
         s = build_conninfo_localhost(

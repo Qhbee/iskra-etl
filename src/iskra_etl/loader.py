@@ -1,6 +1,6 @@
 """笔记本直连远程 PostgreSQL：SSH 隧道 + psycopg ``COPY`` 灌入 Parquet。
 
-与 :mod:`iskra_etl.exporter` 产出的两表对齐：``document``、``chunk``（``001_init.sql``）。
+与 :mod:`iskra_etl.exporter` 产出的两表对齐：``document``、``chunk``（``001_init.sql`` + ``002_add_chunk_text_search_vector.sql``）。
 需在目标库已安装 ``pgvector`` 且表已存在。
 
 非空库全量重载须显式 ``truncate=True``（或 CLI ``--truncate``），将
@@ -233,19 +233,43 @@ def _embedding_to_pgvector_copy_literal(emb: list[float]) -> str:
     return json.dumps(emb, separators=(",", ":"))
 
 
+def _tokenized_to_tsvector_copy_literal(tokenized: str) -> str:
+    """``tsvector`` COPY 字面量（``simple``、无权重）；与 ``to_tsvector('simple', tokenized)`` 对齐。
+
+    例：``马克思主义 哲学`` → ``'马克思主义':1 '哲学':2``
+    """
+    words = tokenized.split()
+    if not words:
+        return ""
+    parts: list[str] = []
+    for i, w in enumerate(words, start=1):
+        escaped = w.replace("'", "''")
+        parts.append(f"'{escaped}':{i}")
+    return " ".join(parts)
+
+
 def _copy_chunks(cur: psycopg.Cursor, df: pd.DataFrame, *, expect_dim: int) -> int:
-    need = ["document_id", "chunk_index", "text", "embedding"]
+    need = ["document_id", "chunk_index", "text", "embedding", "tokenized_text"]
     missing = [c for c in need if c not in df.columns]
     if missing:
         msg = f"chunks.parquet 缺少列: {missing}"
         raise ValueError(msg)
     n = 0
-    sql = """COPY chunk (document_id, chunk_index, text, embedding) FROM STDIN"""
+    sql = """COPY chunk (document_id, chunk_index, text, embedding, tokenized_fts) FROM STDIN"""
     with cur.copy(sql) as copy:
         for row in _iter_copy_rows(df, desc="COPY chunk"):
             emb = _embedding_to_list(row.embedding, expect_dim=expect_dim)
-            lit = _embedding_to_pgvector_copy_literal(emb)
-            copy.write_row((int(row.document_id), int(row.chunk_index), str(row.text), lit))
+            emb_lit = _embedding_to_pgvector_copy_literal(emb)
+            fts_lit = _tokenized_to_tsvector_copy_literal(str(row.tokenized_text))
+            copy.write_row(
+                (
+                    int(row.document_id),
+                    int(row.chunk_index),
+                    str(row.text),
+                    emb_lit,
+                    fts_lit,
+                )
+            )
             n += 1
         print(
             "  … 本地已向 psycopg 的 COPY 流写完所有行；进度条只统计发送速度。正在等待服务器 PostgreSQL 结束 COPY 并落库（经 SSH 隧道刷盘，可能还需一会儿）…",
